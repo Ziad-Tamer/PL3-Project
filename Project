@@ -1,0 +1,177 @@
+// ================================
+// Library Management System (F#)
+// Programming Language 3 Project
+// ================================
+
+open System
+
+// ================================
+// 1. Book Model
+// ================================
+module BookModel =
+    type Book = {
+        Id: Guid
+        Title: string
+        Author: string
+        Category: string
+        PublicationDate: DateTime option
+        mutable IsBorrowed: bool
+        mutable BorrowedBy: string option
+    }
+
+// ================================
+// 2. Library State
+// ================================
+module LibraryState =
+    open BookModel
+
+    type LibraryState = {
+        Books: Book list
+    }
+
+    let empty = { Books = [] }
+
+// ================================
+// 3. CRUD Operations
+// ================================
+module Crud =
+    open BookModel
+
+    let createBook (books: Book list) (title: string) (author: string) (category: string) =
+        let newBook = {
+            Id = Guid.NewGuid()
+            Title = title
+            Author = author
+            Category = category
+            PublicationDate = None
+            IsBorrowed = false
+            BorrowedBy = None
+        }
+        newBook :: books
+
+    let readBook (books: Book list) (id: Guid) =
+        books |> List.tryFind (fun b -> b.Id = id)
+
+    let updateBook (books: Book list) (id: Guid) (newTitle: string option) (newAuthor: string option) =
+        books
+        |> List.map (fun b ->
+            if b.Id = id then
+                { b with
+                    Title = defaultArg newTitle b.Title
+                    Author = defaultArg newAuthor b.Author }
+            else b)
+
+    let deleteBook (books: Book list) (id: Guid) =
+        books |> List.filter (fun b -> b.Id <> id)
+
+// ================================
+// 4. Borrow / Return Logic
+// ================================
+module BorrowReturn =
+    open BookModel
+
+    let borrowBook (books: Book list) (id: Guid) (borrower: string) =
+        books
+        |> List.tryFind (fun b -> b.Id = id)
+        |> function
+            | None -> Error "Book not found"
+            | Some b when b.IsBorrowed -> Error "Book already borrowed"
+            | Some b ->
+                b.IsBorrowed <- true
+                b.BorrowedBy <- Some borrower
+                Ok b
+
+    let returnBook (books: Book list) (id: Guid) =
+        books
+        |> List.tryFind (fun b -> b.Id = id)
+        |> function
+            | None -> Error "Book not found"
+            | Some b when not b.IsBorrowed -> Error "Book is not borrowed"
+            | Some b ->
+                b.IsBorrowed <- false
+                b.BorrowedBy <- None
+                Ok b
+
+// ================================
+// 5. Search Module
+// ================================
+module Search =
+    open BookModel
+    open LibraryState
+
+    let normalize (s: string) =
+        if isNull s then "" else s.Trim().ToLowerInvariant()
+
+    let searchByTitle (state: LibraryState) (query: string) =
+        let q = normalize query
+        state.Books |> List.filter (fun b -> (normalize b.Title).Contains(q))
+
+    let searchByAuthor (state: LibraryState) (query: string) =
+        let q = normalize query
+        state.Books |> List.filter (fun b -> (normalize b.Author).Contains(q))
+
+    let searchByCategory (state: LibraryState) (query: string) =
+        let q = normalize query
+        state.Books |> List.filter (fun b -> (normalize b.Category) = q)
+
+    let searchAvailable (state: LibraryState) =
+        state.Books |> List.filter (fun b -> not b.IsBorrowed)
+
+    let searchByKeyword (state: LibraryState) (query: string) =
+        let q = normalize query
+        state.Books
+        |> List.filter (fun b ->
+            (normalize b.Title).Contains(q)
+            || (normalize b.Author).Contains(q)
+            || (normalize b.Category).Contains(q))
+
+// ================================
+// 6. Storage (Save / Load)
+// ================================
+module Storage =
+    open LibraryState
+    open System.IO
+    open System.Text.Json
+
+    let save (path: string) (state: LibraryState) =
+        let json = JsonSerializer.Serialize(state)
+        File.WriteAllText(path, json)
+
+    let load (path: string) =
+        if File.Exists(path) then
+            let json = File.ReadAllText(path)
+            JsonSerializer.Deserialize<LibraryState>(json)
+        else
+            LibraryState.empty
+
+// ================================
+// 7. Simple Console UI
+// ================================
+module UI =
+    open LibraryState
+    open Crud
+    open Search
+
+    let displayBooks (books: BookModel.Book list) =
+        books |> List.iter (fun b ->
+            printfn "- %s by %s | Borrowed: %b" b.Title b.Author b.IsBorrowed)
+
+    let browse (state: LibraryState) =
+        printfn "Library Books:"
+        displayBooks state.Books
+
+// ================================
+// 8. Program Entry Point
+// ================================
+module Program =
+    open LibraryState
+    open Crud
+    open UI
+
+    [<EntryPoint>]
+    let main _ =
+        let state = LibraryState.empty
+        let books = createBook state.Books "Clean Code" "Robert C. Martin" "Software"
+        let state = { state with Books = books }
+        browse state
+        0
