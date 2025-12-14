@@ -1,177 +1,377 @@
-// ================================
-// Library Management System (F#)
-// Programming Language 3 Project
-// ================================
-
 open System
+open System.IO
+open System.Text.Json
+open System.Windows.Forms
+open System.Drawing
 
-// ================================
-// 1. Book Model
-// ================================
-module BookModel =
-    type Book = {
+// ==========================================
+// 1. DOMAIN (DATA MODELS)
+// ==========================================
+module Domain =
+    type Book = { 
         Id: Guid
         Title: string
         Author: string
         Category: string
-        PublicationDate: DateTime option
-        mutable IsBorrowed: bool
-        mutable BorrowedBy: string option
+        IsBorrowed: bool
+        BorrowedBy: string option 
     }
 
-// ================================
-// 2. Library State
-// ================================
-module LibraryState =
-    open BookModel
+    type LibraryState = { Books: Book list }
+    
+    let emptyState : LibraryState = { Books = [] }
 
-    type LibraryState = {
-        Books: Book list
-    }
-
-    let empty = { Books = [] }
-
-// ================================
-// 3. CRUD Operations
-// ================================
-module Crud =
-    open BookModel
-
-    let createBook (books: Book list) (title: string) (author: string) (category: string) =
-        let newBook = {
-            Id = Guid.NewGuid()
-            Title = title
-            Author = author
-            Category = category
-            PublicationDate = None
-            IsBorrowed = false
-            BorrowedBy = None
-        }
-        newBook :: books
-
-    let readBook (books: Book list) (id: Guid) =
-        books |> List.tryFind (fun b -> b.Id = id)
-
-    let updateBook (books: Book list) (id: Guid) (newTitle: string option) (newAuthor: string option) =
-        books
-        |> List.map (fun b ->
-            if b.Id = id then
-                { b with
-                    Title = defaultArg newTitle b.Title
-                    Author = defaultArg newAuthor b.Author }
-            else b)
-
-    let deleteBook (books: Book list) (id: Guid) =
-        books |> List.filter (fun b -> b.Id <> id)
-
-// ================================
-// 4. Borrow / Return Logic
-// ================================
-module BorrowReturn =
-    open BookModel
-
-    let borrowBook (books: Book list) (id: Guid) (borrower: string) =
-        books
-        |> List.tryFind (fun b -> b.Id = id)
-        |> function
-            | None -> Error "Book not found"
-            | Some b when b.IsBorrowed -> Error "Book already borrowed"
-            | Some b ->
-                b.IsBorrowed <- true
-                b.BorrowedBy <- Some borrower
-                Ok b
-
-    let returnBook (books: Book list) (id: Guid) =
-        books
-        |> List.tryFind (fun b -> b.Id = id)
-        |> function
-            | None -> Error "Book not found"
-            | Some b when not b.IsBorrowed -> Error "Book is not borrowed"
-            | Some b ->
-                b.IsBorrowed <- false
-                b.BorrowedBy <- None
-                Ok b
-
-// ================================
-// 5. Search Module
-// ================================
-module Search =
-    open BookModel
-    open LibraryState
-
-    let normalize (s: string) =
-        if isNull s then "" else s.Trim().ToLowerInvariant()
-
-    let searchByTitle (state: LibraryState) (query: string) =
-        let q = normalize query
-        state.Books |> List.filter (fun b -> (normalize b.Title).Contains(q))
-
-    let searchByAuthor (state: LibraryState) (query: string) =
-        let q = normalize query
-        state.Books |> List.filter (fun b -> (normalize b.Author).Contains(q))
-
-    let searchByCategory (state: LibraryState) (query: string) =
-        let q = normalize query
-        state.Books |> List.filter (fun b -> (normalize b.Category) = q)
-
-    let searchAvailable (state: LibraryState) =
-        state.Books |> List.filter (fun b -> not b.IsBorrowed)
-
-    let searchByKeyword (state: LibraryState) (query: string) =
-        let q = normalize query
-        state.Books
-        |> List.filter (fun b ->
-            (normalize b.Title).Contains(q)
-            || (normalize b.Author).Contains(q)
-            || (normalize b.Category).Contains(q))
-
-// ================================
-// 6. Storage (Save / Load)
-// ================================
+// ==========================================
+// 2. STORAGE (JSON HANDLING)
+// ==========================================
 module Storage =
-    open LibraryState
-    open System.IO
-    open System.Text.Json
+    open Domain
+    let fileName = "library_data.json"
 
-    let save (path: string) (state: LibraryState) =
-        let json = JsonSerializer.Serialize(state)
-        File.WriteAllText(path, json)
+    let save (state: LibraryState) =
+        let options = JsonSerializerOptions(WriteIndented = true)
+        let json = JsonSerializer.Serialize(state, options)
+        File.WriteAllText(fileName, json)
 
-    let load (path: string) =
-        if File.Exists(path) then
-            let json = File.ReadAllText(path)
-            JsonSerializer.Deserialize<LibraryState>(json)
+    let load () : LibraryState =
+        if File.Exists(fileName) then
+            try 
+                let json = File.ReadAllText(fileName)
+                JsonSerializer.Deserialize<LibraryState>(json)
+            with _ -> emptyState
+        else emptyState
+
+// ==========================================
+// 3. OPERATIONS (LOGIC)
+// ==========================================
+module Operations =
+    open Domain
+    let normalize (s: string) = if isNull s then "" else s.Trim().ToLowerInvariant()
+
+    // FIX: Added (string) types to ALL arguments so F# doesn't guess
+    let addBook (state: LibraryState) (title: string) (author: string) (category: string) =
+        if String.IsNullOrWhiteSpace(title) then Error "Title cannot be empty."
+        elif String.IsNullOrWhiteSpace(author) then Error "Author cannot be empty."
         else
-            LibraryState.empty
+            let newBook : Domain.Book = { 
+                Id = Guid.NewGuid()
+                Title = title.Trim()
+                Author = author.Trim()
+                Category = category.Trim()
+                IsBorrowed = false
+                BorrowedBy = None 
+            }
+            Ok { state with Books = newBook :: state.Books }
 
-// ================================
-// 7. Simple Console UI
-// ================================
-module UI =
-    open LibraryState
-    open Crud
-    open Search
+    // FIX: Added (string) types here too
+    let borrowBook (state: LibraryState) (title: string) (borrower: string) =
+        if String.IsNullOrWhiteSpace(borrower) then 
+            Error "Borrower name cannot be empty."
+        else
+            let target = state.Books |> List.tryFind (fun b -> (normalize b.Title) = (normalize title))
+            match target with
+            | None -> Error "Book not found."
+            | Some (b: Domain.Book) when b.IsBorrowed -> 
+                let borrowerName = if b.BorrowedBy.IsSome then b.BorrowedBy.Value else "Unknown"
+                Error ("Book is already borrowed by " + borrowerName)
+            | Some b ->
+                let updated = { b with IsBorrowed = true; BorrowedBy = Some borrower }
+                let newBooks = state.Books |> List.map (fun x -> if x.Id = b.Id then updated else x)
+                Ok { state with Books = newBooks }
 
-    let displayBooks (books: BookModel.Book list) =
-        books |> List.iter (fun b ->
-            printfn "- %s by %s | Borrowed: %b" b.Title b.Author b.IsBorrowed)
+    // FIX: Added (string) type here too
+    let returnBook (state: LibraryState) (title: string) =
+        let target = state.Books |> List.tryFind (fun b -> (normalize b.Title) = (normalize title))
+        match target with
+        | None -> Error "Book not found."
+        | Some (b: Domain.Book) when not b.IsBorrowed -> Error "Book is not currently borrowed."
+        | Some b ->
+            let updated = { b with IsBorrowed = false; BorrowedBy = None }
+            let newBooks = state.Books |> List.map (fun x -> if x.Id = b.Id then updated else x)
+            Ok { state with Books = newBooks }
 
-    let browse (state: LibraryState) =
-        printfn "Library Books:"
-        displayBooks state.Books
+    let searchBooks (state: LibraryState) (query: string) =
+        let q = normalize query
+        state.Books |> List.filter (fun b -> (normalize b.Title).Contains(q) || (normalize b.Author).Contains(q))
 
-// ================================
-// 8. Program Entry Point
-// ================================
-module Program =
-    open LibraryState
-    open Crud
-    open UI
+// ==========================================
+// 4. UNIT TESTS
+// ==========================================
+module UnitTests =
+    open Domain
+    open Operations
 
-    [<EntryPoint>]
-    let main _ =
-        let state = LibraryState.empty
-        let books = createBook state.Books "Clean Code" "Robert C. Martin" "Software"
-        let state = { state with Books = books }
-        browse state
-        0
+    let runBorrowTests () =
+        let sb = new System.Text.StringBuilder()
+        let log (msg: string) = sb.AppendLine(msg) |> ignore
+
+        log "--- STARTING AUTOMATIC UNIT TESTS ---"
+        
+        let setupState = 
+            match addBook emptyState "Test Book" "Test Author" "Test Cat" with
+            | Ok s -> s
+            | Error _ -> emptyState 
+        
+        log "✅ Setup: Created temporary test state."
+
+        log "\n[TEST 1] Attempting valid borrow..."
+        match borrowBook setupState "Test Book" "Student A" with
+        | Ok s2 -> 
+            log "✅ PASSED: Book borrowed successfully."
+            
+            log "\n[TEST 2] Attempting to borrow the same book again..."
+            match borrowBook s2 "Test Book" "Student B" with
+            | Error msg -> log ("✅ PASSED: System correctly rejected it. Error: " + msg)
+            | Ok _ -> log "❌ FAILED: System allowed double borrowing!"
+
+        | Error e -> log ("❌ FAILED: Valid borrow failed. " + e)
+
+        log "\n[TEST 3] Attempting borrow with empty name..."
+        match borrowBook setupState "Test Book" "" with
+        | Error msg -> log ("✅ PASSED: System rejected empty name. Error: " + msg)
+        | Ok _ -> log "❌ FAILED: System allowed empty name!"
+
+        log "\n--- TESTS COMPLETED ---"
+        sb.ToString()
+
+// ==========================================
+// 5. GUI THEME & COMPONENTS
+// ==========================================
+module Theme =
+    let darkSidebar = Color.FromArgb(30, 30, 40)
+    let darkAccent = Color.FromArgb(45, 45, 60)
+    let background = Color.FromArgb(240, 242, 245)
+    let primary = Color.FromArgb(0, 122, 255)
+    
+    let fontHeader = new Font("Segoe UI", 16.0f, FontStyle.Bold)
+    let fontRegular = new Font("Segoe UI", 10.0f)
+    let fontCode = new Font("Consolas", 10.0f)
+
+    let createNavButton (text: string) (top: int) =
+        let btn = new Button(Text = text, Size = Size(200, 50), Location = Point(0, top))
+        btn.FlatStyle <- FlatStyle.Flat
+        btn.FlatAppearance.BorderSize <- 0
+        btn.BackColor <- darkSidebar
+        btn.ForeColor <- Color.White
+        btn.Font <- new Font("Segoe UI", 11.0f)
+        btn.TextAlign <- ContentAlignment.MiddleLeft
+        btn.Padding <- Padding(20, 0, 0, 0)
+        btn.Cursor <- Cursors.Hand
+        btn.MouseEnter.Add(fun _ -> btn.BackColor <- darkAccent)
+        btn.MouseLeave.Add(fun _ -> btn.BackColor <- darkSidebar)
+        btn
+
+    let createCard (title: string) (top: int) =
+        let pnl = new Panel(Size = Size(600, 400), Location = Point(50, top), BackColor = Color.White)
+        let lbl = new Label(Text = title, Font = fontHeader, ForeColor = Color.Black, AutoSize = true, Top = 20, Left = 20)
+        pnl.Controls.Add(lbl)
+        pnl
+
+    let createInput (placeholder: string) (top: int) (parent: Control) =
+        let lbl = new Label(Text = placeholder, Top = top, Left = 30, Font = new Font("Segoe UI", 9.0f), ForeColor = Color.Gray, AutoSize = true)
+        let txt = new TextBox(Top = top + 25, Left = 30, Width = 300, Font = fontRegular, BorderStyle = BorderStyle.FixedSingle)
+        parent.Controls.Add(lbl)
+        parent.Controls.Add(txt)
+        txt
+
+    let createButton (text: string) (top: int) (color: Color) (parent: Control) =
+        let btn = new Button(Text = text, Top = top, Left = 30, Width = 140, Height = 40)
+        btn.FlatStyle <- FlatStyle.Flat
+        btn.FlatAppearance.BorderSize <- 0
+        btn.BackColor <- color
+        btn.ForeColor <- Color.White
+        btn.Font <- new Font("Segoe UI", 10.0f, FontStyle.Bold)
+        btn.Cursor <- Cursors.Hand
+        parent.Controls.Add(btn)
+        btn
+
+// ==========================================
+// 6. MAIN FORM
+// ==========================================
+type LibraryForm() as this =
+    inherit Form()
+    let mutable currentState = Storage.load()
+
+    // --- LAYOUT ---
+    let sidebar = new Panel(Dock = DockStyle.Left, Width = 220, BackColor = Theme.darkSidebar)
+    let contentArea = new Panel(Dock = DockStyle.Fill, BackColor = Theme.background)
+    let lblBrand = new Label(Text = "📚 LibrarySys", Font = new Font("Segoe UI", 14.0f, FontStyle.Bold), ForeColor = Color.White, Top = 30, Left = 25, AutoSize = true)
+    
+    // --- NAV BUTTONS ---
+    let navSearch = Theme.createNavButton "🔍   Search" 100
+    let navAdd = Theme.createNavButton "➕   Add New" 150
+    let navLoan = Theme.createNavButton "📖   Loans" 200
+    let navTest = Theme.createNavButton "🧪   Run Tests" 250
+
+    // --- VIEW 1: SEARCH ---
+    let viewSearch = new Panel(Dock = DockStyle.Fill, Visible = true)
+    let txtSearch = new TextBox(Top = 30, Left = 40, Width = 300, Font = Theme.fontRegular)
+    let btnDoSearch = new Button(Text = "Search", Top = 28, Left = 350, Width = 100, Height = 30, BackColor = Theme.primary, ForeColor = Color.White, FlatStyle = FlatStyle.Flat)
+    
+    let gridBooks : DataGridView = new DataGridView()
+
+    // --- VIEW 2: ADD ---
+    let viewAdd = new Panel(Dock = DockStyle.Fill, Visible = false)
+    let cardAdd = Theme.createCard "Add New Book" 40
+    let txtAddTitle = Theme.createInput "Book Title" 70 cardAdd
+    let txtAddAuthor = Theme.createInput "Author Name" 140 cardAdd
+    let txtAddCat = Theme.createInput "Category" 210 cardAdd
+    let btnSaveBook = Theme.createButton "Save Book" 280 Theme.primary cardAdd
+
+    // --- VIEW 3: LOAN ---
+    let viewLoan = new Panel(Dock = DockStyle.Fill, Visible = false)
+    let cardLoan = Theme.createCard "Manage Loans" 40
+    let txtLoanTitle = Theme.createInput "Exact Book Title" 70 cardLoan
+    let txtLoanUser = Theme.createInput "Student / Member Name" 140 cardLoan
+    let btnBorrow = Theme.createButton "Borrow" 220 Theme.primary cardLoan
+    let btnReturn = Theme.createButton "Return" 220 (Color.FromArgb(220, 53, 69)) cardLoan
+
+    // --- VIEW 4: TEST ---
+    let viewTest = new Panel(Dock = DockStyle.Fill, Visible = false)
+    let cardTest = Theme.createCard "Automatic Unit Tests" 40
+    let btnRunTest = Theme.createButton "Start Test" 70 Theme.primary cardTest
+    let txtTestOutput = new RichTextBox(Top = 130, Left = 30, Width = 540, Height = 250, ReadOnly = true, Font = Theme.fontCode, BackColor = Color.Black, ForeColor = Color.LimeGreen)
+
+    // --- HELPERS ---
+    let showView (pnl: Panel) =
+        viewSearch.Visible <- false
+        viewAdd.Visible <- false
+        viewLoan.Visible <- false
+        viewTest.Visible <- false
+        pnl.Visible <- true
+
+    let updateGrid (books: Domain.Book list) =
+        gridBooks.DataSource <- null
+        
+        let displayData = 
+            books 
+            |> List.map (fun (b: Domain.Book) -> 
+                let statusText = 
+                    if b.IsBorrowed then 
+                        let borrower = if b.BorrowedBy.IsSome then b.BorrowedBy.Value else "Unknown"
+                        "Taken by " + borrower
+                    else 
+                        "Available"
+                
+                {| Title = b.Title
+                   Author = b.Author
+                   Category = b.Category
+                   Status = statusText |}) 
+            |> List.toArray
+            
+        gridBooks.DataSource <- displayData
+        gridBooks.AutoSizeColumnsMode <- DataGridViewAutoSizeColumnsMode.Fill
+
+    // --- CONSTRUCTOR LOGIC ---
+    do
+        this.Text <- "Modern Library System"
+        this.Size <- Size(900, 650)
+        this.StartPosition <- FormStartPosition.CenterScreen
+        
+        // Assemble Sidebar
+        sidebar.Controls.Add(lblBrand)
+        sidebar.Controls.Add(navSearch)
+        sidebar.Controls.Add(navAdd)
+        sidebar.Controls.Add(navLoan)
+        sidebar.Controls.Add(navTest)
+        
+        // Assemble Search View
+        viewSearch.Controls.Add(txtSearch)
+        viewSearch.Controls.Add(btnDoSearch)
+        viewSearch.Controls.Add(gridBooks)
+        
+        // Grid Config
+        gridBooks.Parent <- viewSearch
+        gridBooks.Dock <- DockStyle.None
+        gridBooks.Anchor <- (AnchorStyles.Top ||| AnchorStyles.Left ||| AnchorStyles.Right ||| AnchorStyles.Bottom)
+        gridBooks.Top <- 80
+        gridBooks.Width <- 680
+        gridBooks.Height <- 500
+        gridBooks.BorderStyle <- BorderStyle.None
+        gridBooks.BackgroundColor <- Theme.background
+        gridBooks.RowHeadersVisible <- false
+        gridBooks.DefaultCellStyle.Font <- Theme.fontRegular
+
+        // Assemble Add View
+        viewAdd.Controls.Add(cardAdd)
+
+        // Assemble Loan View
+        btnReturn.Left <- 180
+        viewLoan.Controls.Add(cardLoan)
+
+        // Assemble Test View
+        cardTest.Controls.Add(txtTestOutput)
+        viewTest.Controls.Add(cardTest)
+
+        // Add Everything to Form
+        contentArea.Controls.Add(viewSearch)
+        contentArea.Controls.Add(viewAdd)
+        contentArea.Controls.Add(viewLoan)
+        contentArea.Controls.Add(viewTest)
+        
+        this.Controls.Add(contentArea)
+        this.Controls.Add(sidebar)
+
+        // Initial Data Load
+        updateGrid currentState.Books
+
+        // --- EVENT HANDLERS ---
+        navSearch.Click.Add(fun _ -> showView viewSearch)
+        navAdd.Click.Add(fun _ -> showView viewAdd)
+        navLoan.Click.Add(fun _ -> showView viewLoan)
+        navTest.Click.Add(fun _ -> showView viewTest)
+
+        btnDoSearch.Click.Add(fun _ -> 
+            let results = Operations.searchBooks currentState txtSearch.Text
+            updateGrid results
+        )
+
+        btnSaveBook.Click.Add(fun _ ->
+            match Operations.addBook currentState txtAddTitle.Text txtAddAuthor.Text txtAddCat.Text with
+            | Ok newState ->
+                currentState <- newState
+                Storage.save currentState
+                updateGrid currentState.Books
+                MessageBox.Show("Book saved!") |> ignore
+                txtAddTitle.Clear()
+                txtAddAuthor.Clear()
+                txtAddCat.Clear()
+            | Error msg -> MessageBox.Show(msg, "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning) |> ignore
+        )
+
+        btnBorrow.Click.Add(fun _ ->
+            match Operations.borrowBook currentState txtLoanTitle.Text txtLoanUser.Text with
+            | Ok newState -> 
+                currentState <- newState
+                Storage.save newState
+                updateGrid newState.Books
+                MessageBox.Show("Book Borrowed!") |> ignore
+            | Error msg -> MessageBox.Show(msg, "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning) |> ignore
+        )
+
+        btnReturn.Click.Add(fun _ ->
+            match Operations.returnBook currentState txtLoanTitle.Text with
+            | Ok newState -> 
+                currentState <- newState
+                Storage.save newState
+                updateGrid newState.Books
+                MessageBox.Show("Book Returned!") |> ignore
+            | Error msg -> MessageBox.Show(msg, "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning) |> ignore
+        )
+
+        btnRunTest.Click.Add(fun _ ->
+            txtTestOutput.Text <- "Running tests...\n"
+            let report = UnitTests.runBorrowTests()
+            txtTestOutput.Text <- report
+        )
+
+// ==========================================
+// 7. ENTRY POINT
+// ==========================================
+[<STAThread>]
+[<EntryPoint>]
+let main argv =
+    Application.EnableVisualStyles()
+    Application.SetCompatibleTextRenderingDefault(false)
+    Application.Run(new LibraryForm())
+    0
